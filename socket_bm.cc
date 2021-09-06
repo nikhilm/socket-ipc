@@ -381,7 +381,11 @@ static void BM_EventFdWakeup(benchmark::State& state) {
         abort();
     }
 
-    Event event;
+    int efd2 = eventfd(0, 0);
+    if (efd2 < 0) {
+        abort();
+    }
+
     std::atomic_bool running(true);
     std::thread wake_thread([&] {
         while (true) {
@@ -393,16 +397,23 @@ static void BM_EventFdWakeup(benchmark::State& state) {
             if (r != sizeof(val) || val <= 0) {
                 abort();
             }
-            event.Notify();
+
+            val = 1;
+            if (write(efd2, &val, sizeof(val)) != sizeof(val)) {
+                abort();
+            }
         }
     });
 
     for (auto _ : state) {
-        uint64_t val = 10;
+        uint64_t val = 1;
         if (write(efd, &val, sizeof(val)) != sizeof(val)) {
             abort();
         }
-        event.Wait();
+        int r = read(efd2, &val, sizeof(val));
+        if (r != sizeof(val) || val <= 0) {
+            abort();
+        }
     }
 
     running.store(false);
