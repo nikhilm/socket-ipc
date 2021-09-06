@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/uio.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -373,5 +374,46 @@ fail:
 }
 BENCHMARK(BM_UnixMultiSplice)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768);
 
+// Simply measures how long a thread takes to be woken up via eventfd.
+static void BM_EventFdWakeup(benchmark::State& state) {
+    int efd = eventfd(0, 0);
+    if (efd < 0) {
+        abort();
+    }
+
+    Event event;
+    std::atomic_bool running(true);
+    std::thread wake_thread([&] {
+        while (true) {
+            uint64_t val = 0;
+            int r = read(efd, &val, sizeof(val));
+            if (!running.load()) {
+                break;
+            }
+            if (r != sizeof(val) || val <= 0) {
+                abort();
+            }
+            event.Notify();
+        }
+    });
+
+    for (auto _ : state) {
+        uint64_t val = 10;
+        if (write(efd, &val, sizeof(val)) != sizeof(val)) {
+            abort();
+        }
+        event.Wait();
+    }
+
+    running.store(false);
+    uint64_t val = 10;
+    // Do a write to force the read to quit.
+    if (write(efd, &val, sizeof(val)) != sizeof(val)) {
+        abort();
+    }
+    wake_thread.join();
+    close(efd);
+}
+BENCHMARK(BM_EventFdWakeup);
 
 BENCHMARK_MAIN();
