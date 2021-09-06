@@ -44,13 +44,13 @@ fail:
     close(fds[1]);
     state.SetBytesProcessed(written);
 }
-BENCHMARK(BM_SocketPairWrite)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768)->Iterations(100);
+BENCHMARK(BM_SocketPairWrite)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768);//->Iterations(1000);
 
 static void BM_UDPWrite(benchmark::State& state) {
     uint64_t written = 0;
 
     const uint16_t port = 7667;
-    const char* group = "239.255.255.250";
+    const char* group = "239.255.76.67";
 
     struct sockaddr_in send_addr{};
     struct sockaddr_in recv_addr{};
@@ -106,7 +106,6 @@ static void BM_UDPWrite(benchmark::State& state) {
         }
         written += w;
 
-        /*
         char *buf = new char[data_size];
         socklen_t addrlen = sizeof(recv_addr);
         int r = recvfrom(recv_fd, buf, data_size, 0, (struct sockaddr*) &recv_addr, &addrlen);
@@ -118,7 +117,6 @@ static void BM_UDPWrite(benchmark::State& state) {
             state.SkipWithError("did not read all the data");
             goto fail;
         }
-        */
     }
 
 fail:
@@ -127,7 +125,7 @@ fail:
     state.SetBytesProcessed(written);
 }
 
-BENCHMARK(BM_UDPWrite)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768)->Iterations(100);
+BENCHMARK(BM_UDPWrite)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768);//->Iterations(1000);
 
 // TODO: Then a benchmark that does this using threads & select.
 
