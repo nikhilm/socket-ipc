@@ -1,5 +1,6 @@
 #include <cstring>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/uio.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -7,8 +8,34 @@
 #include <unistd.h>
 
 #include <string>
+#include <atomic>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <iostream>
 
 #include <benchmark/benchmark.h>
+
+class Event final {
+public:
+    void Wait() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait(lock, [&]{ return ready_; });
+        ready_ = false;
+    }
+
+    void Notify() {
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            ready_ = true;
+        }
+        cv_.notify_one();
+    }
+private:
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool ready_{false};
+};
 
 static void BM_UnixSingleWrite(benchmark::State& state) {
     uint64_t written = 0;
@@ -47,6 +74,66 @@ fail:
     state.SetBytesProcessed(written);
 }
 BENCHMARK(BM_UnixSingleWrite)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768);
+
+static void BM_UnixSingleWriteThreaded(benchmark::State& state) {
+    const int data_size = state.range(0);
+    uint64_t written = 0;
+    char *buf = new char[data_size];
+    int fds[2];
+    std::atomic_bool running(true);
+
+    int ret = socketpair(AF_UNIX, SOCK_DGRAM, 0, fds);
+    if (ret == -1) {
+        state.SkipWithError(strerrordesc_np(errno));
+        return;
+    }
+
+    Event event;
+
+    std::thread recv_thread([&]() {
+        while(running.load()) {
+            struct pollfd pfd{};
+            pfd.fd = fds[1];
+            pfd.events = POLLIN;
+            int n = poll(&pfd, 1, 1000);
+            if (n < 0) {
+                abort();
+            } else if (n == 0) {
+                break;
+            }
+            int r = read(fds[1], buf, data_size);
+            if (!running.load()) {
+                break;
+            }
+            if (r == -1) {
+                abort();
+            } else if (r < data_size) {
+                abort();
+            }
+            event.Notify();
+        }
+    });
+
+    for (auto _ : state) {
+        std::string data(data_size, 'X');
+        int w = write(fds[0], data.c_str(), data_size);
+        if (w == -1) {
+            state.SkipWithError(strerrordesc_np(errno));
+            goto fail;
+        }
+        written += w;
+        event.Wait();
+    }
+
+fail:
+    running.store(false);
+    state.SetBytesProcessed(written);
+    close(fds[0]);
+    close(fds[1]);
+    recv_thread.join();
+    delete buf;
+}
+BENCHMARK(BM_UnixSingleWriteThreaded)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768);
 
 static void BM_UDPWrite(benchmark::State& state) {
     uint64_t written = 0;
