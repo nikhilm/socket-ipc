@@ -38,7 +38,7 @@ fail:
     close(fds[1]);
     state.SetBytesProcessed(written);
 }
-BENCHMARK(BM_SocketPairWrite)->Range(32, 1 << 15);
+BENCHMARK(BM_SocketPairWrite)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768);
 
 static void BM_UDPWrite(benchmark::State& state) {
     // TODO: Create a UDP sender and receiver bound to loopback and write.
