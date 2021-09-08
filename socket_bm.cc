@@ -1,6 +1,5 @@
 #include <cstring>
 #include <fcntl.h>
-#include <poll.h>
 #include <sys/uio.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
@@ -39,6 +38,10 @@ private:
 };
 
 static void BM_UnixSingleWrite(benchmark::State& state) {
+    const int data_size = state.range(0);
+    std::string data(data_size, 'X');
+    char *buf = new char[data_size];
+
     uint64_t written = 0;
     int fds[2];
     int ret = socketpair(AF_UNIX, SOCK_DGRAM, 0, fds);
@@ -48,8 +51,6 @@ static void BM_UnixSingleWrite(benchmark::State& state) {
     }
 
     for (auto _ : state) {
-        const int data_size = state.range(0);
-        std::string data(data_size, 'X');
         int w = write(fds[0], data.c_str(), data_size);
         if (w == -1) {
             state.SkipWithError(strerrordesc_np(errno));
@@ -57,9 +58,7 @@ static void BM_UnixSingleWrite(benchmark::State& state) {
         }
         written += w;
 
-        char *buf = new char[data_size];
         int r = read(fds[1], buf, data_size);
-        delete buf;
         if (r == -1) {
             state.SkipWithError(strerrordesc_np(errno));
             goto fail;
@@ -73,14 +72,17 @@ fail:
     close(fds[0]);
     close(fds[1]);
     state.SetBytesProcessed(written);
+    delete buf;
 }
 BENCHMARK(BM_UnixSingleWrite)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768);
 
 static void BM_UnixSingleWriteThreaded(benchmark::State& state) {
     const int data_size = state.range(0);
-    uint64_t written = 0;
+    std::string data(data_size, 'X');
     char *buf = new char[data_size];
+
     int fds[2];
+    uint64_t written = 0;
     std::atomic_bool running(true);
 
     int ret = socketpair(AF_UNIX, SOCK_DGRAM, 0, fds);
@@ -92,16 +94,7 @@ static void BM_UnixSingleWriteThreaded(benchmark::State& state) {
     Event event;
 
     std::thread recv_thread([&]() {
-        while(running.load()) {
-            struct pollfd pfd{};
-            pfd.fd = fds[1];
-            pfd.events = POLLIN;
-            int n = poll(&pfd, 1, 1000);
-            if (n < 0) {
-                abort();
-            } else if (n == 0) {
-                break;
-            }
+        while(true) {
             int r = read(fds[1], buf, data_size);
             if (!running.load()) {
                 break;
@@ -116,7 +109,6 @@ static void BM_UnixSingleWriteThreaded(benchmark::State& state) {
     });
 
     for (auto _ : state) {
-        std::string data(data_size, 'X');
         int w = write(fds[0], data.c_str(), data_size);
         if (w == -1) {
             state.SkipWithError(strerrordesc_np(errno));
@@ -128,15 +120,23 @@ static void BM_UnixSingleWriteThreaded(benchmark::State& state) {
 
 fail:
     running.store(false);
+    // Do a write to force the read to quit.
+    if (write(fds[0], "a", 1) < 1) {
+        abort();
+    }
     state.SetBytesProcessed(written);
+    recv_thread.join();
     close(fds[0]);
     close(fds[1]);
-    recv_thread.join();
     delete buf;
 }
 BENCHMARK(BM_UnixSingleWriteThreaded)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768);
 
 static void BM_UDPWrite(benchmark::State& state) {
+    const int data_size = state.range(0);
+    std::string data(data_size, 'X');
+    char *buf = new char[data_size];
+
     uint64_t written = 0;
 
     const uint16_t port = 7667;
@@ -187,8 +187,6 @@ static void BM_UDPWrite(benchmark::State& state) {
 
 
     for (auto _ : state) {
-        const int data_size = state.range(0);
-        std::string data(data_size, 'X');
         int w = sendto(send_fd, data.c_str(), data.size(), 0, (struct sockaddr*) &send_addr, sizeof(send_addr));
         if (w == -1) {
             state.SkipWithError(strerrordesc_np(errno));
@@ -196,10 +194,8 @@ static void BM_UDPWrite(benchmark::State& state) {
         }
         written += w;
 
-        char *buf = new char[data_size];
         socklen_t addrlen = sizeof(recv_addr);
         int r = recvfrom(recv_fd, buf, data_size, 0, (struct sockaddr*) &recv_addr, &addrlen);
-        delete buf;
         if (r == -1) {
             state.SkipWithError(strerrordesc_np(errno));
             goto fail;
@@ -213,11 +209,16 @@ fail:
     close(send_fd);
     close(recv_fd);
     state.SetBytesProcessed(written);
+    delete buf;
 }
 
 BENCHMARK(BM_UDPWrite)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768);
 
 static void BM_UnixMultiWrite(benchmark::State& state) {
+    const int data_size = state.range(0);
+    std::string data(data_size, 'X');
+    char *buf = new char[data_size];
+
     const size_t N_PAIRS = 10;
     uint64_t written = 0;
     // (send, recv)
@@ -238,8 +239,6 @@ static void BM_UnixMultiWrite(benchmark::State& state) {
     }
 
     for (auto _ : state) {
-        const int data_size = state.range(0);
-        std::string data(data_size, 'X');
         for (auto fd_pair : fds) {
             int w = write(fd_pair.first, data.c_str(), data_size);
             if (w == -1) {
@@ -248,9 +247,7 @@ static void BM_UnixMultiWrite(benchmark::State& state) {
             }
             written += w;
 
-            char *buf = new char[data_size];
             int r = read(fd_pair.second, buf, data_size);
-            delete buf;
             if (r == -1) {
                 state.SkipWithError(strerrordesc_np(errno));
                 goto fail;
@@ -267,10 +264,15 @@ fail:
         close(fd_pair.second);
     }
     state.SetBytesProcessed(written);
+    delete buf;
 }
 BENCHMARK(BM_UnixMultiWrite)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768);
 
 static void BM_UnixMultiSplice(benchmark::State& state) {
+    const int data_size = state.range(0);
+    std::string data(data_size, 'X');
+    char *buf = new char[data_size];
+
     const size_t N_PAIRS = 10;
     uint64_t written = 0;
     // (send, recv)
@@ -311,8 +313,6 @@ static void BM_UnixMultiSplice(benchmark::State& state) {
     }
 
     for (auto _ : state) {
-        const int data_size = state.range(0);
-        std::string data(data_size, 'X');
         // First copy from userspace into the kernel buffer.
         struct iovec iov{};
         iov.iov_base = const_cast<char*>(data.c_str());
@@ -344,7 +344,6 @@ static void BM_UnixMultiSplice(benchmark::State& state) {
             }
             written += w;
 
-            char *buf = new char[data_size];
             int read_bytes = 0;
             while (true) {
                 int r = read(fd_pair.second, buf, data_size);
@@ -357,7 +356,6 @@ static void BM_UnixMultiSplice(benchmark::State& state) {
                     break;
                 }
             }
-            delete buf;
         }
     }
 
@@ -371,6 +369,7 @@ fail:
         close(fd_pair.second);
     }
     state.SetBytesProcessed(written);
+    delete buf;
 }
 BENCHMARK(BM_UnixMultiSplice)->Arg(512)->Arg(1024)->Arg(4096)->Arg(8192)->Arg(16384)->Arg(32768);
 
