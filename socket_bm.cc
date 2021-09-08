@@ -426,4 +426,62 @@ static void BM_EventFdWakeup(benchmark::State& state) {
 }
 BENCHMARK(BM_EventFdWakeup);
 
+// Simply measures how long a thread takes to be woken up via pipe.
+static void BM_PipeWakeup(benchmark::State& state) {
+    int fds[2];
+    int r = pipe(fds);
+    if (r < 0) {
+        abort();
+    }
+
+    int fds2[2];
+    r = pipe(fds2);
+    if (r < 0) {
+        abort();
+    }
+
+    std::atomic_bool running(true);
+    std::thread wake_thread([&] {
+        while (true) {
+            char val = 0;
+            int r = read(fds[0], &val, sizeof(val));
+            if (!running.load()) {
+                break;
+            }
+            if (r != sizeof(val) || val <= 0) {
+                abort();
+            }
+
+            val = 'R';
+            if (write(fds2[1], &val, sizeof(val)) != sizeof(val)) {
+                abort();
+            }
+        }
+    });
+
+    for (auto _ : state) {
+        char val = 'S';
+        if (write(fds[1], &val, sizeof(val)) != sizeof(val)) {
+            abort();
+        }
+        int r = read(fds2[0], &val, sizeof(val));
+        if (r != sizeof(val) || val <= 0) {
+            abort();
+        }
+    }
+
+    running.store(false);
+    char val = 'X';
+    // Do a write to force the read to quit.
+    if (write(fds[1], &val, sizeof(val)) != sizeof(val)) {
+        abort();
+    }
+    wake_thread.join();
+    close(fds[0]);
+    close(fds[1]);
+    close(fds2[0]);
+    close(fds2[1]);
+}
+BENCHMARK(BM_PipeWakeup);
+
 BENCHMARK_MAIN();
